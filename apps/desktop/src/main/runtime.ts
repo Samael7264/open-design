@@ -627,6 +627,42 @@ function ensureWindowVisible(window: BrowserWindow): void {
   window.focus();
 }
 
+/**
+ * Surface of {@link BrowserWindow} consumed by
+ * {@link hideWindowExitingFullscreen} — declared structurally so the
+ * helper can be exercised with a plain mock in unit tests without
+ * standing up an actual Electron window.
+ */
+export type WindowFullscreenSurface = {
+  hide: () => void;
+  isFullScreen: () => boolean;
+  isSimpleFullScreen: () => boolean;
+  setFullScreen: (flag: boolean) => void;
+  setSimpleFullScreen: (flag: boolean) => void;
+  once: (event: 'leave-full-screen', listener: () => void) => unknown;
+};
+
+/**
+ * Hide the window, first leaving any active fullscreen so macOS doesn't
+ * orphan the fullscreen Space as a black screen. The hide is deferred
+ * until 'leave-full-screen' fires; otherwise hiding races the OS Space
+ * teardown and the user is left staring at a black desktop until they
+ * switch Spaces by hand.
+ */
+export function hideWindowExitingFullscreen(window: WindowFullscreenSurface): void {
+  if (window.isSimpleFullScreen()) {
+    window.once('leave-full-screen', () => window.hide());
+    window.setSimpleFullScreen(false);
+    return;
+  }
+  if (window.isFullScreen()) {
+    window.once('leave-full-screen', () => window.hide());
+    window.setFullScreen(false);
+    return;
+  }
+  window.hide();
+}
+
 // PPTX is rendered by the agent into the project folder and reaches the
 // renderer through a normal `<a download>` link to /api/projects/:id/raw/*.
 // Without this hook Electron writes the bytes straight to the OS Downloads
@@ -868,10 +904,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
 
   if (process.platform === "darwin") {
     window.on("close", (event) => {
-      if (!stopped) {
-        event.preventDefault();
-        window.hide();
-      }
+      if (stopped) return;
+      event.preventDefault();
+      hideWindowExitingFullscreen(window);
     });
   }
 
