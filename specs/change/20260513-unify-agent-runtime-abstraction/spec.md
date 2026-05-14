@@ -201,11 +201,11 @@ Flow:
 
 ## Plan
 
-- [ ] Step 1: Introduce runtime adapter foundation
-  - [ ] Substep 1.1 Implement: add `createRuntimeAdapter(def)` and minimal semantic types under `apps/daemon/src/runtimes/`.
-  - [ ] Substep 1.2 Implement: map every current `streamFormat` to existing parser/session helpers without moving helper files.
-  - [ ] Substep 1.3 Implement: make unknown formats throw with a clear error.
-  - [ ] Substep 1.4 Verify: add adapter unit tests for format coverage, stdin behavior, critique eligibility, and fail-fast unknown formats.
+- [x] Step 1: Introduce runtime adapter foundation
+  - [x] Substep 1.1 Implement: add `createRuntimeAdapter(def)` and minimal semantic types under `apps/daemon/src/runtimes/`.
+  - [x] Substep 1.2 Implement: map every current `streamFormat` to existing parser/session helpers without moving helper files.
+  - [x] Substep 1.3 Implement: make unknown formats throw with a clear error.
+  - [x] Substep 1.4 Verify: add adapter unit tests for format coverage, stdin behavior, critique eligibility, and fail-fast unknown formats.
 - [ ] Step 2: Move chat run protocol branching behind adapter
   - [ ] Substep 2.1 Implement: create the adapter once per run and use it for critique eligibility/prompt alignment.
   - [ ] Substep 2.2 Implement: replace spawn stdin and prompt-write conditionals with adapter methods.
@@ -227,8 +227,11 @@ Flow:
 
 ### Implementation
 
-<!-- Files created/modified, decisions made during coding, deviations from design -->
+- `apps/daemon/src/runtimes/runtime-adapter.ts` - added `RuntimeAdapter` semantic contract, `createRuntimeAdapter(def)`, supported stream-format validation, stdin/critique capability helpers, and attachment wiring to the existing plain stdout, Claude, Qoder, Copilot, json-event, Pi RPC, and ACP helpers.
+- `apps/daemon/tests/runtimes/runtime-adapter.test.ts` - added adapter foundation coverage for all current runtime formats, stdin behavior, critique eligibility, and unknown-format fail-fast errors.
 
 ### Verification
 
-<!-- How the feature was verified: tests written, manual testing steps, results -->
+- `pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/runtimes/runtime-adapter.test.ts` - passed.
+- `pnpm --filter @open-design/daemon typecheck` - passed.
+- `pnpm --filter @open-design/daemon test -- tests/runtimes/runtime-adapter.test.ts` - passed full daemon test suite due package script argument handling.
