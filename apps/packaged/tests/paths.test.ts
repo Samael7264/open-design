@@ -16,6 +16,8 @@ describe("resolvePackagedNamespacePaths", () => {
       nodeCommand: null,
       resourceRoot: "/tmp/open-design-packaged/resources",
       telemetryRelayUrl: null,
+      posthogKey: null,
+      posthogHost: null,
       webSidecarEntry: null,
       webStandaloneRoot: null,
       webOutputMode: "server",
