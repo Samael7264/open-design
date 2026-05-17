@@ -74,16 +74,16 @@ export interface ChatSseEndPayload {
 }
 
 export type DaemonAgentPayload =
-  | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string }
-  | { type: 'text_delta'; delta: string }
-  | { type: 'thinking_delta'; delta: string }
+  | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string; sessionId?: string; threadId?: string }
+  | { type: 'text_delta'; delta: string; threadId?: string }
+  | { type: 'thinking_delta'; delta: string; threadId?: string }
   | { type: 'thinking_start' }
   | LiveArtifactSsePayload
   | LiveArtifactRefreshSsePayload
-  | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
-  | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number }
-  | { type: 'raw'; line: string };
+  | { type: 'tool_use'; id: string; name: string; input: unknown; threadId?: string }
+  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; threadId?: string }
+  | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number; threadId?: string }
+  | { type: 'raw'; line: string; threadId?: string };
 
 export type ChatSseEvent =
   | SseTransportEvent<'start', ChatSseStartPayload>

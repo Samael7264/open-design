@@ -29,6 +29,8 @@ describe('api protocol labels', () => {
 
   it('normalizes Qoder local CLI ids, aliases, and executable paths', () => {
     expect(agentDisplayName('qoder')).toBe('Qoder');
+    expect(agentDisplayName('amr')).toBe('AMR');
+    expect(exactAgentDisplayName('Agentic Model Router')).toBe('AMR');
     expect(exactAgentDisplayName('qodercli')).toBe('Qoder');
     expect(exactAgentDisplayName('Qoder CLI')).toBe('Qoder');
     expect(agentDisplayName('/opt/homebrew/bin/qodercli')).toBe('Qoder');

@@ -111,6 +111,102 @@ test('unknown json stream lines become raw events', () => {
   assert.deepEqual(events, [{ type: 'raw', line: 'not-json' }]);
 });
 
+test('amr json stream maps AgentEvent frames to chat events', () => {
+  const { events, handler } = collectEvents('amr');
+
+  handler.feed(
+    JSON.stringify({
+      type: 'session.start',
+      session_id: 'sess-1',
+      session_thread_id: 'thread-1',
+      adapter: 'claude-code',
+      model: 'sonnet',
+    }) + '\n' +
+    JSON.stringify({ type: 'agent.thinking', session_thread_id: 'thread-1', text: 'plan' }) + '\n' +
+    JSON.stringify({ type: 'agent.token', session_thread_id: 'thread-1', delta: 'hello' }) + '\n' +
+    JSON.stringify({
+      type: 'agent.tool_use',
+      session_thread_id: 'thread-1',
+      call_id: 'call-1',
+      tool: 'Read',
+      input: { path: 'index.html' },
+    }) + '\n' +
+    JSON.stringify({
+      type: 'user.tool_result',
+      session_thread_id: 'thread-1',
+      call_id: 'call-1',
+      output: 'ok',
+    }) + '\n' +
+    JSON.stringify({
+      type: 'agent.file_edit',
+      session_thread_id: 'thread-1',
+      path: 'index.html',
+      operation: 'patch',
+      diff: '@@',
+    }) + '\n' +
+    JSON.stringify({
+      type: 'agent.todo_update',
+      todos: [{ id: '1', content: 'Ship AMR', status: 'in_progress' }],
+    }) + '\n' +
+    JSON.stringify({
+      type: 'session.done',
+      session_thread_id: 'thread-1',
+      usage: { input_tokens: 10, output_tokens: 5, reasoning_tokens: 2, cost_usd: 0.03 },
+      duration_ms: 42,
+    }) + '\n' +
+    JSON.stringify({ type: 'session.end', session_thread_id: 'thread-1', exit_code: 0 }) + '\n',
+  );
+
+  assert.deepEqual(events, [
+    {
+      type: 'status',
+      label: 'starting',
+      model: 'sonnet',
+      detail: 'claude-code',
+      sessionId: 'sess-1',
+      threadId: 'thread-1',
+    },
+    { type: 'thinking_delta', delta: 'plan', threadId: 'thread-1' },
+    { type: 'text_delta', delta: 'hello', threadId: 'thread-1' },
+    { type: 'tool_use', id: 'call-1', name: 'Read', input: { path: 'index.html' }, threadId: 'thread-1' },
+    { type: 'tool_result', toolUseId: 'call-1', content: 'ok', isError: false, threadId: 'thread-1' },
+    {
+      type: 'tool_use',
+      id: 'amr-file-edit-1',
+      name: 'FileEdit',
+      input: { path: 'index.html', operation: 'patch', diff: '@@' },
+      threadId: 'thread-1',
+    },
+    {
+      type: 'tool_use',
+      id: 'amr-todo-update-1',
+      name: 'TodoWrite',
+      input: { todos: [{ id: '1', content: 'Ship AMR', status: 'in_progress' }] },
+    },
+    {
+      type: 'usage',
+      usage: { input_tokens: 10, output_tokens: 5, thought_tokens: 2 },
+      costUsd: 0.03,
+      durationMs: 42,
+      threadId: 'thread-1',
+    },
+    { type: 'status', label: 'done', detail: 'exit 0', threadId: 'thread-1' },
+  ]);
+});
+
+test('amr json stream surfaces session errors and raw unknown events', () => {
+  const { events, handler } = collectEvents('amr');
+  const unknown = JSON.stringify({ type: 'agent.unexpected', value: 1 });
+  const error = JSON.stringify({ type: 'session.error', message: 'login required' });
+
+  handler.feed(unknown + '\n' + error + '\n');
+
+  assert.deepEqual(events, [
+    { type: 'raw', line: unknown },
+    { type: 'error', message: 'login required', raw: error },
+  ]);
+});
+
 // Regression coverage for #691: OpenCode emits structured error frames on
 // stdout while still exiting 0. The parser must surface them as proper
 // `error` events (matching the qoder-stream contract) so server.ts's

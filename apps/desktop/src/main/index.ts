@@ -29,6 +29,7 @@ import {
 import { readProcessStamp } from "@open-design/platform";
 
 import { createDesktopRuntime } from "./runtime.js";
+import { registerAmrCallbackProtocol } from "./amr-callback.js";
 import { attachDesktopProcessErrorFilter } from "./uncaught-exception.js";
 
 // Re-export pure URL-policy helpers so the packaged workspace's
@@ -56,6 +57,11 @@ export {
   type PickAndImportFolderDeps,
   type PickAndImportFolderResult,
 } from "./runtime.js";
+export {
+  forwardAmrCallbackUrl,
+  isAmrCallbackUrl,
+  registerAmrCallbackProtocol,
+} from "./amr-callback.js";
 
 const TOOLS_DEV_PARENT_PID_ENV = SIDECAR_ENV.TOOLS_DEV_PARENT_PID;
 
@@ -181,6 +187,11 @@ export async function runDesktopMain(
   // helper is promoted to a shared workspace package.
   attachDesktopProcessErrorFilter();
 
+  const discoverWebUrl = options.discoverWebUrl ?? createWebDiscovery(runtime);
+  const discoverCallbackApiBaseUrl = async () =>
+    (await options.discoverDaemonUrl?.()) ?? await discoverWebUrl();
+  registerAmrCallbackProtocol(app, discoverCallbackApiBaseUrl);
+
   await app.whenReady();
 
   // PR #974: mint a per-process auth secret and hand it to the daemon
@@ -211,7 +222,7 @@ export async function runDesktopMain(
 
   const desktop = await createDesktopRuntime({
     desktopAuthSecret,
-    discoverUrl: options.discoverWebUrl ?? createWebDiscovery(runtime),
+    discoverUrl: discoverWebUrl,
     discoverDaemonUrl: options.discoverDaemonUrl,
     // Round-5 (lefarcen P1, mrcfps): runtime hands this back to itself
     // on `503 DESKTOP_AUTH_PENDING` to re-handshake with the daemon

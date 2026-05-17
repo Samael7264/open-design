@@ -31,6 +31,10 @@
 //                              generation endpoints
 //   * provider 'custom-image'→ user-supplied OpenAI-compatible
 //                              /v1/images/generations endpoint
+//   * AMR bridge            → when an AMR-authenticated agent calls this
+//                              dispatcher for image generation without a
+//                              configured media provider key, route through
+//                              the AMR fal-image connector using AMR_TOKEN
 //
 // The fallback stub handlers are gated behind OD_MEDIA_ALLOW_STUBS=1; in
 // release builds they throw StubProviderDisabledError (mapped to HTTP
@@ -110,6 +114,7 @@ type MediaContext = {
 };
 type RenderResult = { bytes: Buffer; providerNote: string; suggestedExt?: string };
 type JsonRecord = Record<string, unknown>;
+type AmrMediaBridgeConfig = { token: string; gateway: string };
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object';
@@ -121,6 +126,36 @@ function errorMessage(err: unknown): string {
 
 function errorStringProp(err: unknown, key: string): string {
   return isRecord(err) && typeof err[key] === 'string' ? err[key] : '';
+}
+
+function cleanEnvString(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function resolveAmrMediaBridgeConfig(): AmrMediaBridgeConfig | null {
+  const token =
+    cleanEnvString(process.env.AMR_TOKEN) ||
+    cleanEnvString(process.env.AMR_API_KEY);
+  const gateway = cleanEnvString(process.env.AMR_GATEWAY_URL);
+  if (!token || !gateway) return null;
+  return { token, gateway: gateway.replace(/\/+$/, '') };
+}
+
+function imageProviderConfigured(
+  ctx: MediaContext,
+  providerId: string,
+  credentials: ProviderConfig,
+  customImageCredentials: ProviderConfig | null,
+): boolean {
+  if (
+    providerId === 'openai' &&
+    customImageOverridesOpenAIModel(ctx, customImageCredentials)
+  ) {
+    return Boolean(
+      customImageCredentials.apiKey || customImageCredentials.baseUrl,
+    );
+  }
+  return Boolean(credentials.apiKey);
 }
 const NANOBANANA_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
 // Verify the current Nano Banana / Gemini image model name against:
@@ -420,6 +455,11 @@ export async function generateMedia(args: {
     surface === 'image' && def.provider === 'openai'
       ? await resolveProviderConfig(projectRoot, 'custom-image')
       : null;
+  const amrMediaBridge =
+    surface === 'image' &&
+    !imageProviderConfigured(ctx, def.provider, credentials, customImageCredentials)
+      ? resolveAmrMediaBridgeConfig()
+      : null;
 
   let bytes: Buffer;
   let providerNote: string;
@@ -437,7 +477,13 @@ export async function generateMedia(args: {
   // no real renderer is wired up for this (provider, surface) pair.
   let intentionalStub = false;
   try {
-    if (
+    if (amrMediaBridge) {
+      providerId = 'amr';
+      const result = await renderAmrImageConnector(ctx, amrMediaBridge);
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
+    } else if (
       def.provider === 'openai'
       && surface === 'image'
       && customImageOverridesOpenAIModel(ctx, customImageCredentials)
@@ -883,6 +929,96 @@ function customImageOverridesOpenAIModel(
   const model = credentials?.model?.trim();
   if (!baseUrl || !model) return false;
   return model === ctx.model || model === ctx.wireModel;
+}
+
+function firstStringFromPaths(value: unknown, paths: string[][]): string {
+  for (const pathParts of paths) {
+    let cur = value;
+    for (const part of pathParts) {
+      if (!isRecord(cur)) {
+        cur = null;
+        break;
+      }
+      cur = cur[part];
+    }
+    if (typeof cur === 'string' && cur.trim()) return cur.trim();
+  }
+  return '';
+}
+
+async function bytesFromAmrImageReference(ref: string): Promise<Buffer> {
+  if (ref.startsWith('data:')) {
+    const comma = ref.indexOf(',');
+    if (comma < 0) throw new Error('AMR image connector returned an invalid data URL');
+    const meta = ref.slice(0, comma);
+    const raw = ref.slice(comma + 1);
+    return meta.includes(';base64')
+      ? Buffer.from(raw, 'base64')
+      : Buffer.from(decodeURIComponent(raw), 'utf8');
+  }
+  if (/^https?:\/\//i.test(ref)) {
+    const mediaResp = await fetch(ref);
+    if (!mediaResp.ok) {
+      throw new Error(`AMR image download failed with HTTP ${mediaResp.status}`);
+    }
+    const arr = await mediaResp.arrayBuffer();
+    return Buffer.from(arr);
+  }
+  if (/^[A-Za-z0-9+/=\r\n]+$/.test(ref) && ref.length > 32) {
+    return Buffer.from(ref.replace(/\s+/g, ''), 'base64');
+  }
+  throw new Error('AMR image connector returned no fetchable image URL');
+}
+
+async function renderAmrImageConnector(
+  ctx: MediaContext,
+  config: AmrMediaBridgeConfig,
+): Promise<RenderResult> {
+  const resp = await fetch(`${config.gateway}/v1/connectors/fal-image/call`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${config.token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      input: {
+        prompt: ctx.prompt || 'A high-quality reference image.',
+        model: ctx.wireModel,
+        aspect: ctx.aspect,
+        ...(ctx.imageRef?.dataUrl ? { image: ctx.imageRef.dataUrl } : {}),
+      },
+    }),
+  });
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(`AMR image connector ${resp.status}: ${truncate(text, 240)}`);
+  }
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`AMR image connector non-JSON response: ${truncate(text, 200)}`);
+  }
+  const imageRef = firstStringFromPaths(data, [
+    ['output', 'image_url'],
+    ['output', 'url'],
+    ['output', 'b64_json'],
+    ['image_url'],
+    ['url'],
+    ['b64_json'],
+  ]);
+  if (!imageRef) {
+    throw new Error('AMR image connector response had no image URL');
+  }
+  const bytes = await bytesFromAmrImageReference(imageRef);
+  if (bytes.length === 0) {
+    throw new Error('AMR image connector returned zero bytes');
+  }
+  return {
+    bytes,
+    providerNote: `amr/fal-image · ${ctx.wireModel} · ${ctx.aspect} · ${bytes.length} bytes`,
+    suggestedExt: sniffImageExt(bytes),
+  };
 }
 
 async function parseOpenAICompatibleJson(resp: Response, providerTag: string): Promise<any> {

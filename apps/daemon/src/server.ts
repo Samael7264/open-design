@@ -128,7 +128,16 @@ import {
 import { narrowProjectCritiqueOverride } from './critique/spawn-inputs.js';
 import { createCopilotStreamHandler } from './copilot-stream.js';
 import { createJsonEventStreamHandler } from './json-event-stream.js';
-import { classifyAgentAuthFailure, cursorAuthGuidance } from './runtimes/auth.js';
+import {
+  amrAuthGuidance,
+  classifyAgentAuthFailure,
+  cursorAuthGuidance,
+  isAmrSessionNotFoundText,
+} from './runtimes/auth.js';
+import { ensureOpenDesignAmrAgent } from './integrations/amr/agents.js';
+import { amrCredentialsToEnv, clearAmrCredentials } from './integrations/amr/credentials.js';
+import { ensureAmrCredentials } from './integrations/amr/login.js';
+import { registerAmrIntegrationRoutes } from './integrations/amr/routes.js';
 import { createQoderStreamHandler } from './qoder-stream.js';
 import { subscribe as subscribeFileEvents } from './project-watchers.js';
 import { renderDesignSystemPreview } from './design-system-preview.js';
@@ -3697,6 +3706,7 @@ export async function startServer({
     paths: pathDeps,
     mcp: { pendingAuth: mcpPendingAuth, daemonUrlRef },
   });
+  registerAmrIntegrationRoutes(app, db, { dataDir: RUNTIME_DATA_DIR });
   // Project workspace
   registerActiveContextRoutes(app, {
     db,
@@ -8552,13 +8562,23 @@ export async function startServer({
 
     const agentLaunch = resolveAgentLaunch(def, configuredAgentEnv);
     const resolvedBin = agentLaunch.selectedPath;
-
-    const args = def.buildArgs(
+    const amrConversationSessionId =
+      def.id === 'amr' &&
+      typeof conversationId === 'string' &&
+      conversationId
+        ? getConversation(db, conversationId)?.amrSessionId ?? null
+        : null;
+    const runtimeContext = {
+      cwd: effectiveCwd,
+      amrAgentRef: null,
+      amrSessionId: amrConversationSessionId,
+    };
+    let args = def.buildArgs(
       composed,
       safeImages,
       extraAllowedDirs,
       agentOptions,
-      { cwd: effectiveCwd },
+      runtimeContext,
     );
 
     // Second-pass budget check that knows about the Windows `.cmd` shim
@@ -8703,6 +8723,63 @@ export async function startServer({
       ));
       return design.runs.finish(run, 'failed', 1, null);
     }
+    let amrCredentials = null;
+    if (def.id === 'amr') {
+      try {
+        const amrLoginEnv = applyAgentLaunchEnv(
+          spawnEnvForAgent(
+            def.id,
+            {
+              ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant),
+              ...(def.env || {}),
+            },
+            configuredAgentEnv,
+          ),
+          agentLaunch,
+        );
+        send('agent', {
+          type: 'status',
+          label: 'authorizing',
+          detail: 'AMR',
+        });
+        amrCredentials = await ensureAmrCredentials({
+          db,
+          amrBin: agentLaunch.launchPath,
+          env: amrLoginEnv,
+        });
+        const amrSelector =
+          typeof agentOptions?.model === 'string' ? agentOptions.model.trim() : '';
+        if (!amrSelector || amrSelector === 'default') {
+          const agent = await ensureOpenDesignAmrAgent(amrCredentials).catch((agentErr) => {
+            const message = agentErr && agentErr.message ? String(agentErr.message) : String(agentErr);
+            if (/401|unauthorized/i.test(message)) throw agentErr;
+            console.warn('[amr] default agent resource unavailable; falling back to transient base:', message);
+            return null;
+          });
+          if (agent?.id) {
+            runtimeContext.amrAgentRef = agent.id;
+            args = def.buildArgs(
+              composed,
+              safeImages,
+              extraAllowedDirs,
+              agentOptions,
+              runtimeContext,
+            );
+          }
+        }
+      } catch (err) {
+        try { clearAmrCredentials(db); } catch {}
+        revokeToolToken('child_exit');
+        unregisterChatAgentEventSink();
+        const message = err && err.message ? err.message : amrAuthGuidance();
+        send('error', createSseErrorPayload(
+          'AGENT_AUTH_REQUIRED',
+          message,
+          { retryable: true },
+        ));
+        return design.runs.finish(run, 'failed', 1, null);
+      }
+    }
     const odMediaEnv = {
       OD_BIN,
       OD_NODE_BIN,
@@ -8757,6 +8834,8 @@ export async function startServer({
           },
           configuredAgentEnv,
         ),
+        ...(amrCredentials ? amrCredentialsToEnv(amrCredentials) : {}),
+        ...(def.id === 'amr' ? { AMR_TRACE_ID: runId } : {}),
         ...odMediaEnv,
       }, agentLaunch);
       spawnedAgentEnv = env;
@@ -9039,11 +9118,42 @@ export async function startServer({
       'tool_result',
       'artifact',
     ]);
+    const clearAmrConversationSession = () => {
+      if (
+        def.id !== 'amr' ||
+        typeof conversationId !== 'string' ||
+        !conversationId
+      ) {
+        return;
+      }
+      try {
+        updateConversation(db, conversationId, { amrSessionId: null });
+      } catch (err) {
+        console.warn('[amr] failed to clear stale session id:', err && err.message ? err.message : err);
+      }
+    };
     const sendAgentEvent = (ev) => {
       if (ev?.type === 'error') {
         if (agentStreamError) return;
         agentStreamError = String(ev.message || 'Agent stream error');
         clearInactivityWatchdog();
+        if (
+          def.id === 'amr' &&
+          isAmrSessionNotFoundText([
+            agentStreamError,
+            typeof ev.raw === 'string' ? ev.raw : '',
+            agentStdoutTail,
+            agentStderrTail,
+          ].join('\n'))
+        ) {
+          clearAmrConversationSession();
+          send('error', createSseErrorPayload(
+            'AGENT_EXECUTION_FAILED',
+            'AMR could not resume the previous session. Open Design cleared the stored AMR session id; retry this turn to start a fresh AMR session.',
+            { retryable: true },
+          ));
+          return;
+        }
         const authFailure = classifyAgentAuthFailure(
           agentId,
           [
@@ -9054,9 +9164,12 @@ export async function startServer({
           ].join('\n'),
         );
         if (authFailure?.status === 'missing') {
+          if (def.id === 'amr') {
+            try { clearAmrCredentials(db); } catch {}
+          }
           send('error', createSseErrorPayload(
             'AGENT_AUTH_REQUIRED',
-            cursorAuthGuidance(),
+            authFailure.message || cursorAuthGuidance(),
             { retryable: true },
           ));
           return;
@@ -9071,6 +9184,20 @@ export async function startServer({
       noteAgentActivity();
       if (ev?.type && SUBSTANTIVE_AGENT_EVENT_TYPES.has(ev.type)) {
         agentProducedOutput = true;
+      }
+      if (
+        def.id === 'amr' &&
+        ev?.type === 'status' &&
+        typeof ev.sessionId === 'string' &&
+        ev.sessionId &&
+        typeof conversationId === 'string' &&
+        conversationId
+      ) {
+        try {
+          updateConversation(db, conversationId, { amrSessionId: ev.sessionId });
+        } catch (err) {
+          console.warn('[amr] failed to persist session id:', err && err.message ? err.message : err);
+        }
       }
       send('agent', ev);
     };
@@ -9224,7 +9351,9 @@ export async function startServer({
     child.stderr.on('data', (chunk) => {
       noteAgentActivity();
       agentStderrTail = `${agentStderrTail}${chunk}`.slice(-2000);
-      send('stderr', { chunk });
+      if (def.id !== 'amr') {
+        send('stderr', { chunk });
+      }
     });
 
     child.on('error', (err) => {
@@ -9244,14 +9373,30 @@ export async function startServer({
       if (agentStreamError) {
         return design.runs.finish(run, 'failed', code ?? 1, signal ?? null);
       }
+      const authFailure = code !== 0 && !run.cancelRequested
+        ? classifyAgentAuthFailure(agentId, `${agentStderrTail}\n${agentStdoutTail}`)
+        : null;
       if (
         code !== 0 &&
         !run.cancelRequested &&
-        classifyAgentAuthFailure(agentId, `${agentStderrTail}\n${agentStdoutTail}`)?.status === 'missing'
+        def.id === 'amr' &&
+        isAmrSessionNotFoundText(`${agentStderrTail}\n${agentStdoutTail}`)
       ) {
+        clearAmrConversationSession();
+        send('error', createSseErrorPayload(
+          'AGENT_EXECUTION_FAILED',
+          'AMR could not resume the previous session. Open Design cleared the stored AMR session id; retry this turn to start a fresh AMR session.',
+          { retryable: true },
+        ));
+        return design.runs.finish(run, 'failed', code ?? 1, signal ?? null);
+      }
+      if (authFailure?.status === 'missing') {
+        if (def.id === 'amr') {
+          try { clearAmrCredentials(db); } catch {}
+        }
         send('error', createSseErrorPayload(
           'AGENT_AUTH_REQUIRED',
-          cursorAuthGuidance(),
+          authFailure?.message || cursorAuthGuidance(),
           { retryable: true },
         ));
         return design.runs.finish(run, 'failed', code ?? 1, signal ?? null);

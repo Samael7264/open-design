@@ -10,6 +10,10 @@ type ParserState = {
   codexErrorEmitted: boolean;
   codexPreviousEventWasAgentMessage: boolean;
   codexLastAgentMessageEndedWithNewline: boolean;
+  amrSawAssistantText: boolean;
+  amrToolUseIds: Set<string>;
+  amrFileEditCount: number;
+  amrTodoUpdateCount: number;
 };
 
 type Usage = {
@@ -389,6 +393,213 @@ if (obj.type === 'error') {
   return false;
 }
 
+function extractAmrText(value: unknown): string | null {
+  if (typeof value === 'string') return value.length > 0 ? value : null;
+  if (Array.isArray(value)) {
+    const text = value.map(extractAmrText).filter(Boolean).join('');
+    return text.length > 0 ? text : null;
+  }
+  if (isRecord(value)) {
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.content === 'string') return value.content;
+    if (typeof value.delta === 'string') return value.delta;
+    if (typeof value.message === 'string') return value.message;
+  }
+  return null;
+}
+
+function formatAmrUsage(value: unknown): Usage | null {
+  if (!isRecord(value)) return null;
+  const usage: Usage = {};
+  if (typeof value.input_tokens === 'number') usage.input_tokens = value.input_tokens;
+  if (typeof value.output_tokens === 'number') usage.output_tokens = value.output_tokens;
+  if (typeof value.thought_tokens === 'number') usage.thought_tokens = value.thought_tokens;
+  if (typeof value.reasoning_tokens === 'number') usage.thought_tokens = value.reasoning_tokens;
+  if (typeof value.cached_read_tokens === 'number') {
+    usage.cached_read_tokens = value.cached_read_tokens;
+  }
+  if (typeof value.cached_write_tokens === 'number') {
+    usage.cached_write_tokens = value.cached_write_tokens;
+  }
+  return Object.keys(usage).length > 0 ? usage : null;
+}
+
+function amrCallId(obj: JsonObject, fallbackPrefix: string, fallbackIndex: number): string {
+  return (
+    (typeof obj.call_id === 'string' && obj.call_id) ||
+    (typeof obj.callId === 'string' && obj.callId) ||
+    (typeof obj.id === 'string' && obj.id) ||
+    `${fallbackPrefix}-${fallbackIndex}`
+  );
+}
+
+function amrThreadId(obj: JsonObject): string | undefined {
+  return (
+    (typeof obj.session_thread_id === 'string' && obj.session_thread_id) ||
+    (typeof obj.thread_id === 'string' && obj.thread_id) ||
+    undefined
+  );
+}
+
+function withAmrThreadId<T extends StreamEvent>(event: T, obj: JsonObject): T {
+  const threadId = amrThreadId(obj);
+  return threadId ? { ...event, threadId } : event;
+}
+
+function amrCostUsd(obj: JsonObject): number | undefined {
+  if (typeof obj.cost_usd === 'number') return obj.cost_usd;
+  if (isRecord(obj.usage) && typeof obj.usage.cost_usd === 'number') {
+    return obj.usage.cost_usd;
+  }
+  return undefined;
+}
+
+function handleAmrEvent(
+  obj: unknown,
+  onEvent: StreamEventHandler,
+  state: ParserState,
+  rawLine: string,
+): boolean {
+  if (!isRecord(obj) || typeof obj.type !== 'string') return false;
+  const eventType = obj.type;
+
+  if (eventType === 'session.start') {
+    onEvent(withAmrThreadId({
+      type: 'status',
+      label: 'starting',
+      model: typeof obj.model === 'string' ? obj.model : undefined,
+      detail: typeof obj.adapter === 'string' ? obj.adapter : undefined,
+      sessionId: typeof obj.session_id === 'string' ? obj.session_id : undefined,
+    }, obj));
+    return true;
+  }
+
+  if (eventType === 'session.end') {
+    onEvent(withAmrThreadId({
+      type: 'status',
+      label: typeof obj.exit_code === 'number' && obj.exit_code !== 0 ? 'ended' : 'done',
+      detail: typeof obj.exit_code === 'number' ? `exit ${obj.exit_code}` : undefined,
+    }, obj));
+    return true;
+  }
+
+  if (eventType === 'session.error') {
+    onEvent(withAmrThreadId({
+      type: 'error',
+      message: extractErrorMessage(obj.error ?? obj.message, 'AMR session error'),
+      raw: rawLine,
+    }, obj));
+    return true;
+  }
+
+  if (eventType === 'session.done') {
+    const resultText = extractAmrText(obj.result ?? obj.output);
+    if (resultText && !state.amrSawAssistantText) {
+      state.amrSawAssistantText = true;
+      onEvent(withAmrThreadId({ type: 'text_delta', delta: resultText }, obj));
+    }
+    const usage = formatAmrUsage(obj.usage);
+    const costUsd = amrCostUsd(obj);
+    if (usage || typeof costUsd === 'number' || typeof obj.duration_ms === 'number') {
+      onEvent(withAmrThreadId({
+        type: 'usage',
+        usage: usage ?? undefined,
+        costUsd,
+        durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : undefined,
+      }, obj));
+    }
+    return true;
+  }
+
+  if (eventType === 'agent.token') {
+    const text = extractAmrText(obj.delta ?? obj.text ?? obj.content);
+    if (text) {
+      state.amrSawAssistantText = true;
+      onEvent(withAmrThreadId({ type: 'text_delta', delta: text }, obj));
+    }
+    return true;
+  }
+
+  if (eventType === 'agent.message') {
+    const role = typeof obj.role === 'string' ? obj.role : 'assistant';
+    const text = extractAmrText(obj.content ?? obj.message ?? obj.text);
+    if (role === 'assistant' && text && !state.amrSawAssistantText) {
+      state.amrSawAssistantText = true;
+      onEvent(withAmrThreadId({ type: 'text_delta', delta: text }, obj));
+    }
+    return true;
+  }
+
+  if (eventType === 'agent.thinking') {
+    const text = extractAmrText(obj.delta ?? obj.text ?? obj.content);
+    if (text) onEvent(withAmrThreadId({ type: 'thinking_delta', delta: text }, obj));
+    return true;
+  }
+
+  if (eventType === 'agent.tool_use' || eventType === 'agent.custom_tool_use') {
+    const id = amrCallId(obj, 'amr-tool', state.amrToolUseIds.size + 1);
+    if (!state.amrToolUseIds.has(id)) {
+      state.amrToolUseIds.add(id);
+      onEvent(withAmrThreadId({
+        type: 'tool_use',
+        id,
+        name:
+          (typeof obj.tool === 'string' && obj.tool) ||
+          (typeof obj.name === 'string' && obj.name) ||
+          'AMRTool',
+        input: obj.input ?? obj.arguments ?? null,
+      }, obj));
+    }
+    return true;
+  }
+
+  if (eventType === 'user.tool_result' || eventType === 'user.custom_tool_result') {
+    const id = amrCallId(obj, 'amr-tool', state.amrToolUseIds.size + 1);
+    onEvent(withAmrThreadId({
+      type: 'tool_result',
+      toolUseId: id,
+      content: stringifyContent(obj.output ?? obj.result ?? obj.content),
+      isError: Boolean(obj.is_error ?? obj.isError ?? obj.error),
+    }, obj));
+    return true;
+  }
+
+  if (eventType === 'agent.file_edit') {
+    state.amrFileEditCount += 1;
+    const id = amrCallId(obj, 'amr-file-edit', state.amrFileEditCount);
+    onEvent(withAmrThreadId({
+      type: 'tool_use',
+      id,
+      name: 'FileEdit',
+      input: {
+        path: obj.path ?? obj.file ?? obj.file_path ?? null,
+        operation: obj.operation ?? obj.op ?? null,
+        diff: obj.diff ?? obj.patch ?? null,
+      },
+    }, obj));
+    return true;
+  }
+
+  if (eventType === 'agent.todo_update') {
+    state.amrTodoUpdateCount += 1;
+    const todos = Array.isArray(obj.todos) ? obj.todos : obj.items;
+    onEvent(withAmrThreadId({
+      type: 'tool_use',
+      id: amrCallId(obj, 'amr-todo-update', state.amrTodoUpdateCount),
+      name: 'TodoWrite',
+      input: { todos: Array.isArray(todos) ? todos : [] },
+    }, obj));
+    return true;
+  }
+
+  if (eventType === 'user.message') {
+    return true;
+  }
+
+  onEvent(withAmrThreadId({ type: 'raw', line: rawLine }, obj));
+  return true;
+}
+
 export function createJsonEventStreamHandler(kind: ParserKind, onEvent: StreamEventHandler) {
   let buffer = '';
   const state: ParserState = {
@@ -398,6 +609,10 @@ export function createJsonEventStreamHandler(kind: ParserKind, onEvent: StreamEv
     codexErrorEmitted: false,
     codexPreviousEventWasAgentMessage: false,
     codexLastAgentMessageEndedWithNewline: false,
+    amrSawAssistantText: false,
+    amrToolUseIds: new Set<string>(),
+    amrFileEditCount: 0,
+    amrTodoUpdateCount: 0,
   };
 
   function handleLine(line: string): void {
@@ -413,6 +628,7 @@ export function createJsonEventStreamHandler(kind: ParserKind, onEvent: StreamEv
     if (kind === 'gemini' && handleGeminiEvent(obj, onEvent)) return;
     if (kind === 'cursor-agent' && handleCursorEvent(obj, onEvent, state)) return;
     if (kind === 'codex' && handleCodexEvent(obj, onEvent, state)) return;
+    if (kind === 'amr' && handleAmrEvent(obj, onEvent, state, line)) return;
 
     onEvent({ type: 'raw', line });
   }

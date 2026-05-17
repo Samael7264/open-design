@@ -1,4 +1,5 @@
 const AGENT_LABELS: Record<string, string> = {
+  amr: 'AMR',
   claude: 'Claude',
   codex: 'Codex',
   devin: 'Devin',
@@ -17,6 +18,8 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 const AGENT_ALIASES: Record<string, string> = {
+  'agentic model router': 'amr',
+  'amr cli': 'amr',
   'claude code': 'claude',
   'codex cli': 'codex',
   'devin for terminal': 'devin',

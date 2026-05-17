@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import {
   assert, chmodSync, detectAgents, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
 } from './helpers/test-helpers.js';
-import { isCursorAuthFailureText } from '../../src/runtimes/auth.js';
+import { isAmrSessionNotFoundText, isCursorAuthFailureText } from '../../src/runtimes/auth.js';
 
 const fsTest = process.platform === 'win32' ? test.skip : test;
 
@@ -118,6 +118,7 @@ test('inspectAgentExecutableResolution reports configured and PATH Codex binarie
 
 test('resolveAgentExecutable supports configured binary overrides for non-Codex adapters', () => {
   const cases: Array<[string, string, string]> = [
+    ['amr', 'amr', 'AMR_BIN'],
     ['claude', 'claude', 'CLAUDE_BIN'],
     ['gemini', 'gemini', 'GEMINI_BIN'],
     ['opencode', 'opencode', 'OPENCODE_BIN'],
@@ -151,6 +152,12 @@ test('resolveAgentExecutable supports configured binary overrides for non-Codex 
   }
 });
 
+test('AMR auth helpers classify stale resume sessions separately from missing auth', () => {
+  assert.equal(isAmrSessionNotFoundText('session not found: sess-old'), true);
+  assert.equal(isAmrSessionNotFoundText('cannot resume expired session'), true);
+  assert.equal(isAmrSessionNotFoundText('not authenticated'), false);
+});
+
 test('resolveAgentExecutable prefers opencode-cli before desktop opencode fallback', () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-opencode-cli-'));
   try {
@@ -182,9 +189,16 @@ test('detectAgents includes sanitized install and docs metadata from split runti
       process.env.OD_AGENT_HOME = dir;
 
       const agents = await detectAgents();
+      const amr = agents.find((agent) => agent.id === 'amr');
       const qoder = agents.find((agent) => agent.id === 'qoder');
       const deepseek = agents.find((agent) => agent.id === 'deepseek');
 
+      assert.ok(amr);
+      assert.deepEqual(amr.installCommands?.map((entry) => entry.command), [
+        'brew install amr',
+        'npm install -g @amr/cli',
+        'npm install -g @amr/cli',
+      ]);
       assert.ok(qoder);
       assert.equal(qoder.available, false);
       assert.equal(qoder.installUrl, 'https://qoder.com/download');

@@ -3,6 +3,12 @@ export interface AgentModelOption {
   label: string;
 }
 
+export interface AgentInstallCommand {
+  platform: string;
+  command: string;
+  fallback?: string;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -18,6 +24,8 @@ export interface AgentInfo {
   installUrl?: string;
   /** Optional HTTPS URL for configuration / auth / usage docs. */
   docsUrl?: string;
+  /** Optional install commands surfaced by the web UI for unavailable CLIs. */
+  installCommands?: AgentInstallCommand[];
 }
 
 export interface AgentsResponse {

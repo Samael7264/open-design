@@ -75,6 +75,7 @@ function migrate(db: SqliteDb): void {
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       title TEXT,
+      amr_session_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -194,6 +195,18 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS amr_credentials (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      token TEXT NOT NULL,
+      gateway TEXT NOT NULL,
+      user_id TEXT,
+      org_id TEXT,
+      project_id TEXT,
+      key_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
@@ -203,6 +216,10 @@ function migrate(db: SqliteDb): void {
   }
   if (!cols.some((c: DbRow) => c.name === 'custom_instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN custom_instructions TEXT`);
+  }
+  const conversationCols = db.prepare(`PRAGMA table_info(conversations)`).all() as DbRow[];
+  if (!conversationCols.some((c: DbRow) => c.name === 'amr_session_id')) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN amr_session_id TEXT`);
   }
   const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as DbRow[];
   if (!messageCols.some((c: DbRow) => c.name === 'agent_id')) {
@@ -695,6 +712,7 @@ export function listConversations(db: SqliteDb, projectId: string) {
     .prepare(
       `WITH project_conversations AS (
           SELECT id, project_id AS projectId, title,
+                 amr_session_id AS amrSessionId,
                  created_at AS createdAt, updated_at AS updatedAt
             FROM conversations
            WHERE project_id = ?
@@ -722,7 +740,7 @@ export function listConversations(db: SqliteDb, projectId: string) {
             )
            WHERE rn = 1
         )
-        SELECT c.id, c.projectId, c.title, c.createdAt, c.updatedAt,
+        SELECT c.id, c.projectId, c.title, c.amrSessionId, c.createdAt, c.updatedAt,
                lr.latestRunStatus, lr.latestRunStartedAt,
                lr.latestRunEndedAt, lr.latestRunEventsJson
           FROM project_conversations c
@@ -736,6 +754,7 @@ export function getConversation(db: SqliteDb, id: string) {
   const r = db
     .prepare(
       `SELECT id, project_id AS projectId, title,
+              amr_session_id AS amrSessionId,
               created_at AS createdAt, updated_at AS updatedAt
          FROM conversations WHERE id = ?`,
     )
@@ -758,6 +777,7 @@ function normalizeConversation(r: DbRow) {
     id: r.id,
     projectId: r.projectId,
     title: r.title ?? null,
+    amrSessionId: r.amrSessionId ?? null,
     createdAt: Number(r.createdAt),
     updatedAt: Number(r.updatedAt),
     latestRun: latestRun ?? undefined,
@@ -827,9 +847,16 @@ function latestUsageDurationMs(eventsJson: unknown): number | undefined {
 export function insertConversation(db: SqliteDb, c: DbRow) {
   db.prepare(
     `INSERT INTO conversations
-       (id, project_id, title, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(c.id, c.projectId, c.title ?? null, c.createdAt, c.updatedAt);
+       (id, project_id, title, amr_session_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    c.id,
+    c.projectId,
+    c.title ?? null,
+    c.amrSessionId ?? null,
+    c.createdAt,
+    c.updatedAt,
+  );
   return getConversation(db, c.id);
 }
 
@@ -843,8 +870,8 @@ export function updateConversation(db: SqliteDb, id: string, patch: DbRow) {
   };
   db.prepare(
     `UPDATE conversations
-        SET title = ?, updated_at = ? WHERE id = ?`,
-  ).run(merged.title ?? null, merged.updatedAt, id);
+        SET title = ?, amr_session_id = ?, updated_at = ? WHERE id = ?`,
+  ).run(merged.title ?? null, merged.amrSessionId ?? null, merged.updatedAt, id);
   return getConversation(db, id);
 }
 

@@ -544,6 +544,10 @@ function normalizeToolInput(input: unknown): unknown {
 // return null so the UI ignores them instead of rendering garbage.
 function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
   const t = data.type;
+  const threadId =
+    'threadId' in data && typeof data.threadId === 'string' && data.threadId
+      ? { threadId: data.threadId }
+      : {};
   if (t === 'status' && typeof data.label === 'string') {
     return {
       kind: 'status',
@@ -556,13 +560,18 @@ function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
           : typeof data.ttftMs === 'number'
             ? `first token in ${Math.round((data.ttftMs as number) / 100) / 10}s`
             : undefined,
+      sessionId:
+        typeof data.sessionId === 'string' && data.sessionId
+          ? data.sessionId
+          : undefined,
+      ...threadId,
     };
   }
   if (t === 'text_delta' && typeof data.delta === 'string') {
-    return { kind: 'text', text: data.delta };
+    return { kind: 'text', text: data.delta, ...threadId };
   }
   if (t === 'thinking_delta' && typeof data.delta === 'string') {
-    return { kind: 'thinking', text: data.delta };
+    return { kind: 'thinking', text: data.delta, ...threadId };
   }
   if (t === 'thinking_start') {
     return { kind: 'status', label: 'thinking' };
@@ -590,7 +599,13 @@ function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
     };
   }
   if (t === 'tool_use' && typeof data.id === 'string' && typeof data.name === 'string') {
-    return { kind: 'tool_use', id: data.id, name: data.name, input: normalizeToolInput(data.input) };
+    return {
+      kind: 'tool_use',
+      id: data.id,
+      name: data.name,
+      input: normalizeToolInput(data.input),
+      ...threadId,
+    };
   }
   if (t === 'tool_result' && typeof data.toolUseId === 'string') {
     return {
@@ -598,6 +613,7 @@ function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
       toolUseId: data.toolUseId,
       content: String(data.content ?? ''),
       isError: Boolean(data.isError),
+      ...threadId,
     };
   }
   if (t === 'usage') {
@@ -608,12 +624,88 @@ function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
       outputTokens: usage.output_tokens,
       costUsd: typeof data.costUsd === 'number' ? data.costUsd : undefined,
       durationMs: typeof data.durationMs === 'number' ? data.durationMs : undefined,
+      ...threadId,
     };
   }
   if (t === 'raw' && typeof data.line === 'string') {
-    return { kind: 'raw', line: data.line };
+    return { kind: 'raw', line: data.line, ...threadId };
   }
   return null;
+}
+
+export type AgentIntegrationConnectState =
+  | { status: 'idle' }
+  | { status: 'connecting'; startedAt: number }
+  | { status: 'error'; message: string; failedAt: number };
+
+export interface AgentIntegrationStatus {
+  connected: boolean;
+  connectState: AgentIntegrationConnectState;
+  identity:
+    | {
+        userId: string | null;
+        orgId: string | null;
+        projectId: string | null;
+        keyId: string | null;
+        gateway: string;
+      }
+    | null;
+}
+
+// Today only `amr` has a daemon-managed OAuth flow; the helpers below take
+// `agentId` so callers don't hardcode the URL and the surface generalizes
+// once the next agent (cursor-agent, etc.) gets one.
+function integrationBasePath(agentId: string): string | null {
+  if (agentId === 'amr') return '/api/integrations/amr';
+  return null;
+}
+
+export async function startAgentIntegrationConnect(
+  agentId: string,
+): Promise<{ ok: true; alreadyConnected?: boolean; alreadyRunning?: boolean } | { ok: false; error: string }> {
+  const base = integrationBasePath(agentId);
+  if (!base) return { ok: false, error: `agent ${agentId} has no daemon-managed connect flow` };
+  try {
+    const resp = await fetch(`${base}/connect`, { method: 'POST' });
+    const payload = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!resp.ok) {
+      return { ok: false, error: typeof payload.error === 'string' ? payload.error : `HTTP ${resp.status}` };
+    }
+    return {
+      ok: true,
+      ...(payload.alreadyConnected === true ? { alreadyConnected: true } : {}),
+      ...(payload.alreadyRunning === true ? { alreadyRunning: true } : {}),
+    };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message ?? String(err) };
+  }
+}
+
+export async function fetchAgentIntegrationStatus(
+  agentId: string,
+): Promise<AgentIntegrationStatus | null> {
+  const base = integrationBasePath(agentId);
+  if (!base) return null;
+  try {
+    const resp = await fetch(`${base}/status`);
+    if (!resp.ok) return null;
+    return (await resp.json()) as AgentIntegrationStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function disconnectAgentIntegration(
+  agentId: string,
+): Promise<boolean> {
+  const base = integrationBasePath(agentId);
+  if (!base) return false;
+  try {
+    const resp = await fetch(`${base}/disconnect`, { method: 'POST' });
+    return resp.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function saveArtifact(

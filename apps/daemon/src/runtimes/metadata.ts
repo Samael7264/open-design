@@ -1,8 +1,25 @@
 /** HTTPS links for the web UI when an agent is unavailable. Keys match `AGENT_DEFS[].id`. */
 const AGENT_INSTALL_LINKS: Record<
   string,
-  { installUrl?: string; docsUrl?: string }
+  {
+    installUrl?: string;
+    docsUrl?: string;
+    installCommands?: Array<{
+      platform: string;
+      command: string;
+      fallback?: string;
+    }>;
+  }
 > = {
+  amr: {
+    installUrl: 'https://github.com/nexu-io/open-design/blob/main/docs/integrations/amr.md',
+    docsUrl: 'https://github.com/nexu-io/open-design/blob/main/docs/integrations/amr.md',
+    installCommands: [
+      { platform: 'macOS', command: 'brew install amr', fallback: 'npm install -g @amr/cli' },
+      { platform: 'Linux', command: 'npm install -g @amr/cli' },
+      { platform: 'Windows', command: 'npm install -g @amr/cli' },
+    ],
+  },
   claude: {
     installUrl: 'https://docs.anthropic.com/en/docs/claude-code/setup',
     docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
@@ -81,13 +98,31 @@ function sanitizeHttpsUrl(value: string | undefined): string | undefined {
 
 export function installMetaForAgent(
   agentId: string,
-): { installUrl?: string; docsUrl?: string } {
+): {
+  installUrl?: string;
+  docsUrl?: string;
+  installCommands?: Array<{
+    platform: string;
+    command: string;
+    fallback?: string;
+  }>;
+} {
   const meta = AGENT_INSTALL_LINKS[agentId];
   if (!meta) return {};
   const installUrl = sanitizeHttpsUrl(meta.installUrl);
   const docsUrl = sanitizeHttpsUrl(meta.docsUrl);
+  const installCommands = Array.isArray(meta.installCommands)
+    ? meta.installCommands.filter(
+        (entry) =>
+          typeof entry.platform === 'string' &&
+          entry.platform.trim() &&
+          typeof entry.command === 'string' &&
+          entry.command.trim(),
+      )
+    : [];
   return {
     ...(installUrl ? { installUrl } : {}),
     ...(docsUrl ? { docsUrl } : {}),
+    ...(installCommands.length > 0 ? { installCommands } : {}),
   };
 }

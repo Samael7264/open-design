@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import {
-  assert, claude, codex, copilot, cursorAgent, deepseek, devin, detectAgents, gemini, join, kilo, kiro, mkdtempSync, opencode, pi, qoder, qwen, rmSync, spawnEnvForAgent, tmpdir, vibe, writeFileSync, chmodSync,
+  amr, assert, claude, codex, copilot, cursorAgent, deepseek, devin, detectAgents, gemini, join, kilo, kiro, mkdtempSync, opencode, pi, qoder, qwen, rmSync, spawnEnvForAgent, tmpdir, vibe, writeFileSync, chmodSync,
 } from './helpers/test-helpers.js';
 import type { TestAgentDef } from './helpers/test-helpers.js';
 
@@ -23,6 +23,138 @@ test('cursor-agent args deliver prompts via stdin without passing a literal dash
     '--workspace',
     '/tmp/od-project',
   ]);
+});
+
+test('amr args run the meta-agent via stdin without embedding prompt text', () => {
+  const prompt = 'design a dashboard';
+  const args = amr.buildArgs(
+    prompt,
+    [],
+    [],
+    {},
+    { cwd: '/tmp/od-project' },
+  );
+
+  assert.equal(amr.promptViaStdin, true);
+  assert.equal(amr.streamFormat, 'json-event-stream');
+  assert.equal(amr.eventParser, 'amr');
+  assert.equal(args.includes(prompt), false);
+  assert.deepEqual(args, [
+    'agent',
+    'run',
+    '--stream',
+    '--output-format',
+    'stream-json',
+    '-w',
+    '/tmp/od-project',
+    '--base',
+    'claude-code',
+  ]);
+});
+
+test('amr args support base, agent, and model selectors', () => {
+  const defaultAgentArgs = amr.buildArgs(
+    '',
+    [],
+    [],
+    {},
+    { amrAgentRef: 'open-design-default' },
+  );
+  assert.deepEqual(defaultAgentArgs, [
+    'agent',
+    'run',
+    'open-design-default',
+    '--stream',
+    '--output-format',
+    'stream-json',
+  ]);
+
+  const resumeArgs = amr.buildArgs(
+    '',
+    [],
+    [],
+    {},
+    { amrAgentRef: 'open-design-default', amrSessionId: 'sess-123' },
+  );
+  assert.deepEqual(resumeArgs, [
+    'agent',
+    'run',
+    'open-design-default',
+    '--stream',
+    '--output-format',
+    'stream-json',
+    '--resume',
+    'sess-123',
+  ]);
+
+  const baseArgs = amr.buildArgs('', [], [], { model: 'base:codex' }, {});
+  assert.deepEqual(baseArgs, [
+    'agent',
+    'run',
+    '--stream',
+    '--output-format',
+    'stream-json',
+    '--base',
+    'codex',
+  ]);
+
+  const agentArgs = amr.buildArgs('', [], [], { model: 'agent:designer' }, {});
+  assert.deepEqual(agentArgs, [
+    'agent',
+    'run',
+    'designer',
+    '--stream',
+    '--output-format',
+    'stream-json',
+  ]);
+
+  const modelArgs = amr.buildArgs('', [], [], { model: 'openrouter/auto' }, {});
+  assert.deepEqual(modelArgs, [
+    'agent',
+    'run',
+    '--stream',
+    '--output-format',
+    'stream-json',
+    '--base',
+    'claude-code',
+    '--model',
+    'openrouter/auto',
+  ]);
+});
+
+test('amr model listing surfaces saved gateway agents when session credentials exist', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'od-amr-models-'));
+  const sessionPath = join(dir, 'session.json');
+  const originalFetch = globalThis.fetch;
+  try {
+    writeFileSync(
+      sessionPath,
+      JSON.stringify({
+        gateway: 'https://gateway.example.com',
+        api_key: 'token-1',
+      }),
+      'utf8',
+    );
+    globalThis.fetch = (async (input, init) => {
+      assert.equal(String(input), 'https://gateway.example.com/v1/agents');
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer token-1');
+      return new Response(JSON.stringify({
+        object: 'list',
+        data: [{ id: 'agent-1', name: 'designer', base: 'claude-code' }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const models = await amr.fetchModels?.('amr', { AMR_SESSION: sessionPath });
+
+    assert.deepEqual(models?.slice(0, 3), [
+      { id: 'default', label: 'Default (CLI config)' },
+      { id: 'agent:agent-1', label: 'designer (claude-code)' },
+      { id: 'base:claude-code', label: 'Claude Code base' },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('opencode args deliver prompts via stdin without passing a literal dash prompt', () => {

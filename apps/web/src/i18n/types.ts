@@ -124,6 +124,11 @@ export interface Dict {
   'settings.noAgentsDetected': string;
   'settings.agentAuthRequired': string;
   'settings.agentAuthUnknown': string;
+  'settings.agentConnect': string;
+  'settings.agentConnecting': string;
+  'settings.agentConnectFailed': string;
+  'settings.agentConnectCheckBrowser': string;
+  'settings.agentDisconnect': string;
   'settings.apiSection': string;
   'settings.quickFillProvider': string;
   'settings.customProvider': string;

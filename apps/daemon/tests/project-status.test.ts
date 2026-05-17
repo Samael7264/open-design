@@ -14,6 +14,7 @@ import {
   listLatestProjectRunStatuses,
   listProjectsAwaitingInput,
   openDatabase,
+  updateConversation,
   upsertMessage,
 } from '../src/db.js';
 import { composeProjectDisplayStatus } from '../src/server.js';
@@ -122,6 +123,30 @@ test('conversation latest run follows assistant message position', () => {
 
   assert.equal(listConversations(db, 'project-latest')[0]?.latestRun?.status, 'running');
   assert.equal(getConversation(db, conversationId)?.latestRun?.status, 'running');
+});
+
+test('conversations persist AMR session ids for resume', () => {
+  const db = createDb();
+  insertProject(db, {
+    id: 'project-amr',
+    name: 'project-amr',
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  insertConversation(db, {
+    id: 'project-amr-conversation',
+    projectId: 'project-amr',
+    title: null,
+    amrSessionId: 'sess-initial',
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  assert.equal(getConversation(db, 'project-amr-conversation')?.amrSessionId, 'sess-initial');
+  updateConversation(db, 'project-amr-conversation', { amrSessionId: 'sess-next', updatedAt: 2 });
+
+  assert.equal(getConversation(db, 'project-amr-conversation')?.amrSessionId, 'sess-next');
+  assert.equal(listConversations(db, 'project-amr')[0]?.amrSessionId, 'sess-next');
 });
 
 test('conversation listing batches latest run summaries for large projects', () => {

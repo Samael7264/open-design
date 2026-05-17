@@ -9,6 +9,12 @@ export type RuntimeModelOption = {
 
 export type RuntimeReasoningOption = RuntimeModelOption;
 
+export type RuntimeInstallCommand = {
+  platform: string;
+  command: string;
+  fallback?: string;
+};
+
 export type RuntimeBuildOptions = {
   model?: string | null;
   reasoning?: string | null;
@@ -16,6 +22,8 @@ export type RuntimeBuildOptions = {
 
 export type RuntimeContext = {
   cwd?: string;
+  amrAgentRef?: string | null;
+  amrSessionId?: string | null;
 };
 
 export type RuntimeCapabilityMap = Record<string, boolean>;
@@ -72,6 +80,7 @@ export type RuntimeAgentDef = {
   mcpDiscovery?: string;
   installUrl?: string;
   docsUrl?: string;
+  installCommands?: RuntimeInstallCommand[];
 };
 
 export type DetectedAgent = Omit<

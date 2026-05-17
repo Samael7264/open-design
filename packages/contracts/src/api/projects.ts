@@ -154,6 +154,7 @@ export interface Conversation {
   id: string;
   projectId: string;
   title: string | null;
+  amrSessionId?: string | null;
   createdAt: number;
   updatedAt: number;
   latestRun?: {

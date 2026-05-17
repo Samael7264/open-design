@@ -123,9 +123,9 @@ export interface ChatCommentAttachment {
 }
 
 export type PersistedAgentEvent =
-  | { kind: 'status'; label: string; detail?: string }
-  | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  | { kind: 'status'; label: string; detail?: string; sessionId?: string; threadId?: string }
+  | { kind: 'text'; text: string; threadId?: string }
+  | { kind: 'thinking'; text: string; threadId?: string }
   | {
       kind: 'live_artifact';
       action: 'created' | 'updated' | 'deleted';
@@ -144,10 +144,10 @@ export type PersistedAgentEvent =
       refreshedSourceCount?: number;
       error?: string;
     }
-  | { kind: 'tool_use'; id: string; name: string; input: unknown }
-  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
-  | { kind: 'usage'; inputTokens?: number; outputTokens?: number; costUsd?: number; durationMs?: number }
-  | { kind: 'raw'; line: string };
+  | { kind: 'tool_use'; id: string; name: string; input: unknown; threadId?: string }
+  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean; threadId?: string }
+  | { kind: 'usage'; inputTokens?: number; outputTokens?: number; costUsd?: number; durationMs?: number; threadId?: string }
+  | { kind: 'raw'; line: string; threadId?: string };
 
 export interface ChatMessage {
   id: string;

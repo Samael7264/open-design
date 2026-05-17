@@ -1971,6 +1971,17 @@ export function SettingsDialog({
                         const installUrl = sanitizeHttpsUrl(a.installUrl);
                         const docsUrl = sanitizeHttpsUrl(a.docsUrl);
                         const hasLinks = Boolean(installUrl || docsUrl);
+                        const installCommands = Array.isArray(
+                          a.installCommands,
+                        )
+                          ? a.installCommands.filter(
+                              (entry) =>
+                                typeof entry.platform === 'string' &&
+                                entry.platform.trim() &&
+                                typeof entry.command === 'string' &&
+                                entry.command.trim(),
+                            )
+                          : [];
                         const cardLabel = `${a.name} · ${t('common.notInstalled')}`;
                         // Not-installed cards intentionally drop the "not
                         // installed" label and the explicit version row.
@@ -1992,30 +2003,48 @@ export function SettingsDialog({
                             <div className="agent-card-body">
                               <div className="agent-card-name">{a.name}</div>
                             </div>
-                            {hasLinks ? (
-                              <div className="agent-card-actions agent-card-actions--inline">
-                                {docsUrl ? (
-                                  <a
-                                    href={docsUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="agent-card-link agent-card-link--muted"
-                                  >
-                                    {t('settings.agentInstall.docs')}
-                                  </a>
-                                ) : null}
-                                {installUrl ? (
-                                  <a
-                                    href={installUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="agent-card-link agent-card-link--ghost"
-                                  >
-                                    {t('settings.agentInstall.install')}
-                                  </a>
-                                ) : null}
-                              </div>
-                            ) : null}
+                            <div className="agent-card-side">
+                              {hasLinks ? (
+                                <div className="agent-card-actions agent-card-actions--inline">
+                                  {docsUrl ? (
+                                    <a
+                                      href={docsUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="agent-card-link agent-card-link--muted"
+                                    >
+                                      {t('settings.agentInstall.docs')}
+                                    </a>
+                                  ) : null}
+                                  {installUrl ? (
+                                    <a
+                                      href={installUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="agent-card-link agent-card-link--ghost"
+                                    >
+                                      {t('settings.agentInstall.install')}
+                                    </a>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                              {installCommands.length > 0 ? (
+                                <div className="agent-install-commands">
+                                  {installCommands.map((entry) => (
+                                    <div
+                                      key={`${a.id}:${entry.platform}`}
+                                      className="agent-install-command"
+                                    >
+                                      <span>{entry.platform}</span>
+                                      <code>{entry.command}</code>
+                                      {entry.fallback ? (
+                                        <code>{entry.fallback}</code>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
                         );
                       })();
